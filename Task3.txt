@@ -1,0 +1,74 @@
+```python
+from sklearn.datasets import fetch_california_housing
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+import joblib
+import numpy as np
+from fastapi import FastAPI
+from pydantic import BaseModel, conlist
+import uvicorn
+from pathlib import Path
+
+data = fetch_california_housing(as_frame=True)
+df = data.frame.copy()
+df['target'] = data.target
+
+X = df.drop(columns=['target'])
+y = df['target']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+preprocessor = Pipeline([
+    ('imputer', SimpleImputer(strategy='median')),
+    ('scaler', StandardScaler())
+])
+
+X_train_t = preprocessor.fit_transform(X_train)
+X_test_t = preprocessor.transform(X_test)
+
+model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+model.fit(X_train_t, y_train)
+preds = model.predict(X_test_t)
+
+mse = mean_squared_error(y_test, preds)
+r2 = r2_score(y_test, preds)
+print(f"MSE: {mse:.4f}, R2: {r2:.4f}")
+
+artifacts = Path("artifacts")
+artifacts.mkdir(exist_ok=True)
+joblib.dump(model, artifacts / "model.joblib")
+joblib.dump(preprocessor, artifacts / "preprocessor.joblib")
+
+app = FastAPI(title="House Price Prediction API")
+
+FEATURE_NAMES = [
+ "MedInc", "HouseAge", "AveRooms", "AveBedrms",
+ "Population", "AveOccup", "Latitude", "Longitude"
+]
+
+class PredictRequest(BaseModel):
+    features: conlist(float, min_items=8, max_items=8)
+
+class PredictResponse(BaseModel):
+    prediction: float
+
+model = joblib.load(artifacts / "model.joblib")
+preprocessor = joblib.load(artifacts / "preprocessor.joblib")
+
+@app.get("/")
+def root():
+    return {"message": "House Price Prediction API"}
+
+@app.post("/predict", response_model=PredictResponse)
+def predict(req: PredictRequest):
+    X = np.array(req.features).reshape(1, -1)
+    X_t = preprocessor.transform(X)
+    pred = model.predict(X_t)[0]
+    return {"prediction": float(pred)}
+
+if __name__ == "__main__":
+    uvicorn.run("full_project:app", host="0.0.0.0", port=8000, reload=True)
+```
